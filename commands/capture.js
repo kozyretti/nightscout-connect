@@ -52,6 +52,9 @@ function main (argv) {
     , label: argv['fs-label']
     };
   }
+  if (argv.output == 'default') {
+    output_config = { name: 'default' };
+  }
 
   console.log("CONFIGURED OUTPUT", output_config);
   var output = outputs(output_config)(output_config, axios);
@@ -85,9 +88,43 @@ function main (argv) {
 
   //console.log(things);
   var actor = interpret(things);
+
+  if (argv.once) {
+    var done = false;
+    var timeoutMs = (argv.onceTimeout || 60) * 1000;
+    function finish (code) {
+      if (done) return;
+      done = true;
+      try { actor.send({ type: 'STOP' }); } catch (_) {}
+      try { actor.stop( ); } catch (_) {}
+      setImmediate(() => process.exit(code));
+    }
+    var sawError = false;
+    actor.onEvent((event) => {
+      var t = typeof event.type === 'string' ? event.type : '';
+      if (t.startsWith('error.platform')) {
+        sawError = true;
+        console.error("ONE-SHOT: error event =", t,
+          event.data && event.data.message ? event.data.message : '');
+      }
+      if (t.startsWith('done.invoke.frame')) {
+        if (sawError) {
+          console.error("ONE-SHOT: cycle finished with errors");
+          finish(1);
+        } else {
+          console.log("ONE-SHOT: cycle finished successfully");
+          finish(0);
+        }
+      }
+    });
+    setTimeout(() => {
+      console.error("ONE-SHOT: timeout (" + timeoutMs + "ms) — no PERSISTED_DATA");
+      finish(2);
+    }, timeoutMs);
+  }
+
   actor.start( );
   actor.send({type: 'START'});
-  // setTimeout(( ) => { actor.send({type: 'STOP'}); }, 60000 * 1);
 
 }
 
@@ -96,8 +133,10 @@ module.exports.command = 'capture <dir> [hint]';
 module.exports.describe = 'Runs as a background server forever.'
 module.exports.builder = (yargs) => yargs
   .option('source', { alias: 'hint', describe: 'source input', default: 'default', choices: Object.keys(sources.kinds)})
-  .option('output', { describe: "output type", default: "nightscout", choices: [ 'nightscout', 'filesystem' ] })
+  .option('output', { describe: "output type", default: "nightscout", choices: [ 'nightscout', 'filesystem', 'default' ] })
   .option('fs-prefix', { describe: "filesystem prefix for output", default: 'logs/' })
   .option('fs-label', { describe: "filesystem label for output" })
   .option('dir', { describe: 'output directory', default: './har' })
+  .option('once', { describe: 'run a single fetch cycle then exit', type: 'boolean', default: false })
+  .option('once-timeout', { describe: 'timeout in seconds for --once', type: 'number', default: 60 })
 module.exports.handler = main;
